@@ -14,6 +14,7 @@ import androidx.media3.ui.AspectRatioFrameLayout;
 
 import com.brouken.player.osd.subtitle.SubtitleEdgeType;
 import com.brouken.player.osd.subtitle.SubtitleTypeface;
+import com.brouken.player.subtitle.SubtitleDelayRenderersFactory;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -112,6 +113,7 @@ public class Prefs {
 
     private LinkedHashMap positions;
     private final LinkedHashMap<String, Integer> subtitleDelayMap = new LinkedHashMap<>();
+    private final LinkedHashMap<String, Integer> subtitleSpeedMap = new LinkedHashMap<>();
 
     public boolean persistentMode = true;
     public long nonPersitentPosition = -1L;
@@ -394,8 +396,16 @@ public class Prefs {
     }
 
     public void updateSubtitleDelay(final int subtitleDelayMs) {
+        updateSubtitleSync(subtitleDelayMs, getSubtitleSpeedForUri(mediaUri));
+    }
+
+    public void updateSubtitleSpeed(final int subtitleSpeedPpm) {
+        updateSubtitleSync(getSubtitleDelayForUri(mediaUri), subtitleSpeedPpm);
+    }
+
+    public void updateSubtitleSync(final int subtitleDelayMs, final int subtitleSpeedPpm) {
         if (mediaUri != null) {
-            updateSubtitleDelayForUri(mediaUri, subtitleDelayMs);
+            updateSubtitleSyncForUri(mediaUri, subtitleDelayMs, subtitleSpeedPpm);
         }
     }
 
@@ -408,22 +418,38 @@ public class Prefs {
         return delay != null ? delay : 0;
     }
 
-    private void updateSubtitleDelayForUri(@NonNull Uri uri, int delayMs) {
+    public int getSubtitleSpeedForUri(@Nullable Uri uri) {
+        String key = getSubtitleDelayKeyFromUri(uri);
+        if (key == null) {
+            return SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL;
+        }
+        Integer speed = subtitleSpeedMap.get(key);
+        return speed != null && speed > 0 ? speed : SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL;
+    }
+
+    private void updateSubtitleSyncForUri(@NonNull Uri uri, int delayMs, int speedPpm) {
         String key = getSubtitleDelayKeyFromUri(uri);
         if (key == null) {
             return;
         }
         subtitleDelayMap.remove(key);
         subtitleDelayMap.put(key, delayMs);
+        if (speedPpm > 0 && speedPpm != SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL) {
+            subtitleSpeedMap.put(key, speedPpm);
+        } else {
+            subtitleSpeedMap.remove(key);
+        }
         while (subtitleDelayMap.size() > MAX_SUBTITLE_DELAY_ENTRIES) {
             String oldestKey = subtitleDelayMap.keySet().iterator().next();
             subtitleDelayMap.remove(oldestKey);
+            subtitleSpeedMap.remove(oldestKey);
         }
         saveSubtitleDelays();
     }
 
     private void loadSubtitleDelays() {
         subtitleDelayMap.clear();
+        subtitleSpeedMap.clear();
         String raw = mSharedPreferences.getString(PREF_KEY_SUBTITLE_DELAY_MAP, null);
         if (raw == null || raw.isEmpty()) {
             return;
@@ -444,8 +470,12 @@ public class Prefs {
                     continue;
                 }
                 int delayMs = entry.optInt("delay", 0);
+                int speedPpm = entry.optInt("speed", SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL);
                 subtitleDelayMap.remove(key);
                 subtitleDelayMap.put(key, delayMs);
+                if (speedPpm > 0 && speedPpm != SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL) {
+                    subtitleSpeedMap.put(key, speedPpm);
+                }
                 if (subtitleDelayMap.size() >= MAX_SUBTITLE_DELAY_ENTRIES) {
                     break;
                 }
@@ -462,6 +492,10 @@ public class Prefs {
                 JSONObject object = new JSONObject();
                 object.put("name", entry.getKey());
                 object.put("delay", entry.getValue());
+                Integer speedPpm = subtitleSpeedMap.get(entry.getKey());
+                if (speedPpm != null) {
+                    object.put("speed", speedPpm);
+                }
                 array.put(object);
             }
         } catch (JSONException e) {

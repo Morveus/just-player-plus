@@ -41,14 +41,7 @@ public class OsdSettingsController {
 
         subtitleAdapter = new SubtitleOsdSettingsAdapter(context, createSubtitleSettingsListener());
 
-        subtitleAdapter.setInitialValues(
-                prefs.subtitleVerticalPosition,
-                prefs.getSubtitleDelayForUri(prefs.mediaUri),
-                prefs.subtitleSize,
-                prefs.subtitleEdgeType,
-                prefs.subtitleTypeface,
-                prefs.subtitleStyleEmbedded
-        );
+        refreshSubtitleValues();
 
         View settingsView = LayoutInflater.from(context).inflate(R.layout.osd_settings, null);
         RecyclerView recyclerView = settingsView.findViewById(android.R.id.list);
@@ -63,7 +56,23 @@ public class OsdSettingsController {
         }
     }
 
+    @SuppressLint("NotifyDataSetChanged")
+    private void refreshSubtitleValues() {
+        subtitleAdapter.setInitialValues(
+                prefs.subtitleVerticalPosition,
+                prefs.getSubtitleDelayForUri(prefs.mediaUri),
+                prefs.getSubtitleSpeedForUri(prefs.mediaUri),
+                prefs.subtitleSize,
+                prefs.subtitleEdgeType,
+                prefs.subtitleTypeface,
+                prefs.subtitleStyleEmbedded
+        );
+        subtitleAdapter.notifyDataSetChanged();
+    }
+
     public void showSubtitleSettings() {
+        // Delay, speed and media may have changed since the controller was created.
+        refreshSubtitleValues();
         int margin = playerActivity.getResources().getDimensionPixelSize(R.dimen.osd_settings_margin);
         TextView titleTextView = osdSettingsWindow.getContentView().findViewById(android.R.id.text1);
         titleTextView.setText(R.string.osd_subtitle_title);
@@ -88,6 +97,18 @@ public class OsdSettingsController {
             @Override
             public void onSubtitleDelayChange(int delay) {
                 playerActivity.updateSubtitleDelay(delay);
+            }
+
+            @Override
+            public void onSubtitleSpeedChange(int speedPpm) {
+                playerActivity.updateSubtitleSpeed(speedPpm);
+            }
+
+            @Override
+            public void onSubtitleSyncClick() {
+                // Dismiss so the snackbar guidance is visible and playback can continue.
+                osdSettingsWindow.dismiss();
+                playerActivity.setSubtitleSyncPoint();
             }
 
             @Override

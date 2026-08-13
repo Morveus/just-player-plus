@@ -29,8 +29,8 @@ public class SubtitleOsdSettingsAdapter extends OsdSettingsAdapter {
         this.listener = listener;
     }
 
-    public void setInitialValues(int subtitlePosition, int subtitleDelay, int size, SubtitleEdgeType edgeType, SubtitleTypeface typeface, boolean embeddedStyles) {
-        this.items = createSubtitleSettingsArray(subtitlePosition, subtitleDelay, size, edgeType, typeface, embeddedStyles);
+    public void setInitialValues(int subtitlePosition, int subtitleDelay, int subtitleSpeedPpm, int size, SubtitleEdgeType edgeType, SubtitleTypeface typeface, boolean embeddedStyles) {
+        this.items = createSubtitleSettingsArray(subtitlePosition, subtitleDelay, subtitleSpeedPpm, size, edgeType, typeface, embeddedStyles);
     }
 
     public void setSubtitlePosition(int subtitlePosition) {
@@ -38,10 +38,12 @@ public class SubtitleOsdSettingsAdapter extends OsdSettingsAdapter {
         notifyItemChanged(0);
     }
 
-    private OsdSettingsItem[] createSubtitleSettingsArray(int subtitlePosition, int subtitleDelay, int size, SubtitleEdgeType edgeType, SubtitleTypeface typeface, boolean embeddedStyles) {
+    private OsdSettingsItem[] createSubtitleSettingsArray(int subtitlePosition, int subtitleDelay, int subtitleSpeedPpm, int size, SubtitleEdgeType edgeType, SubtitleTypeface typeface, boolean embeddedStyles) {
         return new OsdSettingsItem[]{
                 createPositionItem(subtitlePosition),
                 createDelayItem(subtitleDelay),
+                createSpeedItem(subtitleSpeedPpm),
+                createSyncItem(),
                 createSizeItem(size),
                 createEdgeTypeItem(edgeType),
                 createTypefaceItem(typeface),
@@ -65,6 +67,59 @@ public class SubtitleOsdSettingsAdapter extends OsdSettingsAdapter {
     private OsdSettingsItem createDelayItem(int subtitleDelay) {
         IntegerOsdSettingsItem.Listener itemListener = (position, newValue) -> listener.onSubtitleDelayChange(newValue);
         return new SubtitleDelayOsdSettingsItem(context, subtitleDelay, itemListener, this);
+    }
+
+    // Speed presets for frame-rate mismatched subtitles, in ppm: "A -> B" means subtitles
+    // timestamped for A fps played at B fps, i.e. a factor of B / A.
+    private static final int[] SPEED_PRESETS_PPM = {
+            1_000_000,
+            1_042_708, 959_041,   // 23.976 -> 25, 25 -> 23.976
+            1_041_667, 960_000,   // 24 -> 25, 25 -> 24
+            1_001_001, 999_001,   // 23.976 -> 24, 24 -> 23.976
+    };
+
+    private OsdSettingsItem createSpeedItem(int subtitleSpeedPpm) {
+        String title = context.getString(R.string.osd_subtitle_speed_title);
+
+        int presetIndex = -1;
+        for (int i = 0; i < SPEED_PRESETS_PPM.length; i++) {
+            if (Math.abs(subtitleSpeedPpm - SPEED_PRESETS_PPM[i]) <= 100) {
+                presetIndex = i;
+                break;
+            }
+        }
+
+        ArrayList<ChoiceOsdSettingsItem.Element> elementList = new ArrayList<>();
+        elementList.add(new ChoiceOsdSettingsItem.Element(context.getString(R.string.osd_subtitle_speed_normal)));
+        elementList.add(new ChoiceOsdSettingsItem.Element("23.976 → 25"));
+        elementList.add(new ChoiceOsdSettingsItem.Element("25 → 23.976"));
+        elementList.add(new ChoiceOsdSettingsItem.Element("24 → 25"));
+        elementList.add(new ChoiceOsdSettingsItem.Element("25 → 24"));
+        elementList.add(new ChoiceOsdSettingsItem.Element("23.976 → 24"));
+        elementList.add(new ChoiceOsdSettingsItem.Element("24 → 23.976"));
+        if (presetIndex < 0) {
+            String custom = context.getString(R.string.osd_subtitle_speed_custom,
+                    String.format(java.util.Locale.US, "%.5f", subtitleSpeedPpm / 1e6));
+            elementList.add(new ChoiceOsdSettingsItem.Element(custom));
+            presetIndex = elementList.size() - 1;
+        }
+
+        ChoiceOsdSettingsItem.Element[] elements = new ChoiceOsdSettingsItem.Element[elementList.size()];
+        elementList.toArray(elements);
+        ChoiceOsdSettingsItem.Listener itemListener = (position, newElementIndex) -> {
+            if (newElementIndex < SPEED_PRESETS_PPM.length) {
+                listener.onSubtitleSpeedChange(SPEED_PRESETS_PPM[newElementIndex]);
+            }
+        };
+        return new ChoiceOsdSettingsItem(title, elements, presetIndex, itemListener, this);
+    }
+
+    private OsdSettingsItem createSyncItem() {
+        String title = context.getString(R.string.osd_subtitle_sync_title);
+        @SuppressLint("PrivateResource")
+        Drawable icon = getDrawable(context, androidx.media3.ui.R.drawable.exo_styled_controls_settings);
+        SimpleOsdSettingsItem.Listener itemListener = position -> listener.onSubtitleSyncClick();
+        return new SimpleOsdSettingsItem(title, icon, itemListener);
     }
 
     private OsdSettingsItem createSizeItem(int size) {
@@ -161,6 +216,10 @@ public class SubtitleOsdSettingsAdapter extends OsdSettingsAdapter {
         void onSubtitlePositionChange(int position);
 
         void onSubtitleDelayChange(int delay);
+
+        void onSubtitleSpeedChange(int speedPpm);
+
+        void onSubtitleSyncClick();
 
         void onSubtitleSizeChange(int size);
 

@@ -63,6 +63,13 @@
     <string name="osd_subtitle_title">@string/pref_subtitle_header</string>
     <string name="osd_subtitle_position_title">Position</string>
     <string name="osd_subtitle_delay_title">Delay</string>
+    <string name="osd_subtitle_speed_title">Speed (fps mismatch)</string>
+    <string name="osd_subtitle_speed_normal">Normal</string>
+    <string name="osd_subtitle_speed_custom">Custom ×%1$s</string>
+    <string name="osd_subtitle_sync_title">Smart resync</string>
+    <string name="subtitle_sync_point1_set">Sync point 1 saved. When subtitles drift again later, fix the delay there and tap Smart resync once more.</string>
+    <string name="subtitle_sync_too_close">Sync points are too close. Play at least one minute further, fix the delay again, then retap.</string>
+    <string name="subtitle_sync_applied">Subtitles resynced: speed ×%1$s, delay %2$s</string>
     <string name="osd_subtitle_size_title">Size</string>
     <string name="osd_subtitle_edge_type_title">Edge type</string>
     <string name="osd_subtitle_edge_type_default">@string/pref_language_track_default</string>

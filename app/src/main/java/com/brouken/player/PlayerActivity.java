@@ -189,7 +189,11 @@ public class PlayerActivity extends Activity {
     public boolean frameRendered;
     private boolean alive;
     private final AtomicInteger subtitleDelayMs = new AtomicInteger();
-    private final Runnable subtitleDelayApplyRunnable = this::applySubtitleDelay;
+    private final AtomicInteger subtitleSpeedPpm = new AtomicInteger(SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL);
+    private final Runnable subtitleDelayApplyRunnable = this::applySubtitleSync;
+    private long subtitleSyncPoint1PositionMs = -1;
+    private int subtitleSyncPoint1DelayMs;
+    private int subtitleSyncPoint1SpeedPpm;
     public static boolean focusPlay = false;
     private Uri nextUri;
     private static boolean isTvBox;
@@ -1288,6 +1292,8 @@ public class PlayerActivity extends Activity {
 
         int subtitleDelay = mPrefs.getSubtitleDelayForUri(mPrefs.mediaUri);
         subtitleDelayMs.set(subtitleDelay);
+        subtitleSpeedPpm.set(mPrefs.getSubtitleSpeedForUri(mPrefs.mediaUri));
+        subtitleSyncPoint1PositionMs = -1;
 
         EnhancedSubtitleParserFactory enhancedSubtitleParserFactory = new EnhancedSubtitleParserFactory(0);
         SubtitleParser.Factory subtitleParserFactory = enhancedSubtitleParserFactory;
@@ -1298,7 +1304,7 @@ public class PlayerActivity extends Activity {
                 .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
                 .setSubtitleParserFactory(subtitleParserFactory);
 
-        @SuppressLint("WrongConstant") RenderersFactory renderersFactory = new SubtitleDelayRenderersFactory(this, subtitleDelayMs)
+        @SuppressLint("WrongConstant") RenderersFactory renderersFactory = new SubtitleDelayRenderersFactory(this, subtitleDelayMs, subtitleSpeedPpm)
                 .setExtensionRendererMode(mPrefs.decoderPriority)
                 .setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
 
@@ -2100,14 +2106,87 @@ public class PlayerActivity extends Activity {
 
     public void updateSubtitleDelay(int delayMs) {
         mPrefs.updateSubtitleDelay(delayMs);
+        scheduleSubtitleSyncApply();
+    }
+
+    public void updateSubtitleSpeed(int speedPpm) {
+        mPrefs.updateSubtitleSpeed(speedPpm);
+        scheduleSubtitleSyncApply();
+    }
+
+    private void scheduleSubtitleSyncApply() {
         playerView.removeCallbacks(subtitleDelayApplyRunnable);
         playerView.postDelayed(subtitleDelayApplyRunnable, 500);
     }
 
-    private void applySubtitleDelay() {
-        int newDelayMs = mPrefs.getSubtitleDelayForUri(mPrefs.mediaUri);
-        subtitleDelayMs.set(newDelayMs);
+    private void applySubtitleSync() {
+        subtitleDelayMs.set(mPrefs.getSubtitleDelayForUri(mPrefs.mediaUri));
+        subtitleSpeedPpm.set(mPrefs.getSubtitleSpeedForUri(mPrefs.mediaUri));
         restartPlayback();
+    }
+
+    // Frame-rate mismatched subtitles drift linearly: cue time = position * speed - delay. Two
+    // user-provided sync points (fix the delay near the start, then again once drift shows) are
+    // enough to solve for both terms. The computed speed is snapped to a known frame-rate ratio
+    // when close, making the correction exact even from approximate sync points.
+    private static final long SUBTITLE_SYNC_MIN_SPAN_MS = 60_000;
+    private static final double[] SUBTITLE_SYNC_KNOWN_RATIOS = {
+            1.0,
+            1001 / 1000.0, 1000 / 1001.0,           // 23.976 <-> 24, 29.97 <-> 30
+            25 / 23.976, 23.976 / 25,               // 23.976 <-> 25 (PAL speedup)
+            25 / 24.0, 24 / 25.0,                   // 24 <-> 25
+    };
+
+    public void setSubtitleSyncPoint() {
+        if (player == null || mPrefs.mediaUri == null) {
+            return;
+        }
+        long positionMs = player.getCurrentPosition();
+        int delayMs = mPrefs.getSubtitleDelayForUri(mPrefs.mediaUri);
+        int speedPpm = mPrefs.getSubtitleSpeedForUri(mPrefs.mediaUri);
+
+        // Changing the speed between the two points invalidates the first one: restart the flow.
+        if (subtitleSyncPoint1PositionMs < 0 || speedPpm != subtitleSyncPoint1SpeedPpm) {
+            subtitleSyncPoint1PositionMs = positionMs;
+            subtitleSyncPoint1DelayMs = delayMs;
+            subtitleSyncPoint1SpeedPpm = speedPpm;
+            showSnack(getString(R.string.subtitle_sync_point1_set), null);
+            return;
+        }
+
+        long p1 = subtitleSyncPoint1PositionMs;
+        long p2 = positionMs;
+        int d1 = subtitleSyncPoint1DelayMs;
+        int d2 = delayMs;
+        if (p2 < p1) {
+            long pTmp = p1; p1 = p2; p2 = pTmp;
+            int dTmp = d1; d1 = d2; d2 = dTmp;
+        }
+        if (p2 - p1 < SUBTITLE_SYNC_MIN_SPAN_MS) {
+            showSnack(getString(R.string.subtitle_sync_too_close), null);
+            return;
+        }
+
+        // Both points satisfy cueTime = p * r0 - d, so the corrected mapping cueTime = p * r - D
+        // has slope r = r0 - (d2 - d1) / (p2 - p1).
+        double r0 = subtitleSyncPoint1SpeedPpm / 1e6;
+        double slope = (d2 - d1) / (double) (p2 - p1);
+        double r = r0 - slope;
+        for (double known : SUBTITLE_SYNC_KNOWN_RATIOS) {
+            if (Math.abs(r - known) <= known * 4e-4) {
+                r = known;
+                break;
+            }
+        }
+        // Anchor the delay on the later point, where the user synced last.
+        int newDelayMs = (int) Math.round(d2 + p2 * (r - r0));
+        int newSpeedPpm = (int) Math.round(r * 1e6);
+
+        subtitleSyncPoint1PositionMs = -1;
+        mPrefs.updateSubtitleSync(newDelayMs, newSpeedPpm);
+        scheduleSubtitleSyncApply();
+        showSnack(getString(R.string.subtitle_sync_applied,
+                String.format(Locale.US, "%.5f", r), Utils.formatMilisSign(newDelayMs)), null);
     }
 
     private void restartPlayback() {
