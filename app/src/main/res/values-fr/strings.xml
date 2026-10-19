@@ -57,4 +57,6 @@
     <string name="pref_subtitle_header">Sous-titrage</string>
     <string name="pref_subtitle_style_bold">Style gras</string>
     <string name="pref_subtitle_style_bold_on">Utiliser le gras comme forme régulière</string>
+    <string name="stall_watchdog_restart">Lecture figée, relance du décodeur…</string>
+    <string name="stall_watchdog_failed">Lecture toujours figée, essaie de reculer</string>
 </resources>
