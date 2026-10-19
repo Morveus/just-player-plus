@@ -37,6 +37,7 @@ import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Base64;
+import android.util.Log;
 import android.util.DisplayMetrics;
 import android.util.Rational;
 import android.util.TypedValue;
@@ -191,6 +192,18 @@ public class PlayerActivity extends Activity {
     private final AtomicInteger subtitleDelayMs = new AtomicInteger();
     private final AtomicInteger subtitleSpeedPpm = new AtomicInteger(SubtitleDelayRenderersFactory.SPEED_PPM_NORMAL);
     private final Runnable subtitleDelayApplyRunnable = this::applySubtitleSync;
+    // Stall watchdog: some hardware decoders (VC-1 on Shield) stop outputting frames while
+    // plenty of media is buffered, leaving the player stuck in STATE_BUFFERING. A seek
+    // flushes the decoders and gets playback going again.
+    private static final String STALL_TAG = "StallWatchdog";
+    private static final long STALL_TIMEOUT_MS = 8000;
+    private static final long STALL_RECHECK_MS = 2000;
+    private static final long STALL_MIN_BUFFERED_MS = 10000;
+    private static final long STALL_STEP_BACK_MS = 10000;
+    private static final int STALL_MAX_ATTEMPTS = 5;
+    private int stallAttempts;
+    private long stallPosition;
+    private final Runnable stallWatchdogRunnable = this::checkPlaybackStall;
     private long subtitleSyncPoint1PositionMs = -1;
     private int subtitleSyncPoint1DelayMs;
     private int subtitleSyncPoint1SpeedPpm;
@@ -1250,6 +1263,7 @@ public class PlayerActivity extends Activity {
         haveMedia = mPrefs.mediaUri != null;
 
         if (player != null) {
+            stopStallWatchdog(true);
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1511,6 +1525,7 @@ public class PlayerActivity extends Activity {
             if (player.isPlaying() && restorePlayStateAllowed) {
                 restorePlayState = true;
             }
+            stopStallWatchdog(true);
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1518,6 +1533,56 @@ public class PlayerActivity extends Activity {
         }
         titleView.setVisibility(View.GONE);
         updateButtons(false);
+    }
+
+    private void startStallWatchdog(long delayMs) {
+        playerView.removeCallbacks(stallWatchdogRunnable);
+        playerView.postDelayed(stallWatchdogRunnable, delayMs);
+    }
+
+    private void stopStallWatchdog(boolean resetAttempts) {
+        playerView.removeCallbacks(stallWatchdogRunnable);
+        if (resetAttempts) {
+            stallAttempts = 0;
+        }
+    }
+
+    private void checkPlaybackStall() {
+        if (player == null || player.getPlaybackState() != Player.STATE_BUFFERING) {
+            return;
+        }
+        if (!player.getPlayWhenReady() || isScrubbing) {
+            startStallWatchdog(STALL_RECHECK_MS);
+            return;
+        }
+        final long position = player.getCurrentPosition();
+        final long buffered = player.getBufferedPosition() - position;
+        if (buffered < STALL_MIN_BUFFERED_MS) {
+            // Genuine network buffering: keep watching in case the decoder stalls afterwards
+            startStallWatchdog(STALL_RECHECK_MS);
+            return;
+        }
+        if (position > stallPosition + 60000) {
+            // A new stall well past the previous one: start counting again
+            stallAttempts = 0;
+        }
+        if (stallAttempts == 0) {
+            stallPosition = position;
+        }
+        if (stallAttempts >= STALL_MAX_ATTEMPTS) {
+            Log.w(STALL_TAG, "Playback still stalled after " + stallAttempts + " restarts, giving up");
+            Utils.showText(playerView, getString(R.string.stall_watchdog_failed), 5000);
+            return;
+        }
+        stallAttempts++;
+        // First try restarting the decoders where we are, then step back a little
+        final long seekTo = stallAttempts == 1 ? position : Math.max(0, position - STALL_STEP_BACK_MS);
+        Log.w(STALL_TAG, "Stalled at " + position + " ms with " + buffered + " ms buffered, restart #" + stallAttempts + " to " + seekTo + " ms");
+        player.setSeekParameters(SeekParameters.PREVIOUS_SYNC);
+        player.seekTo(seekTo);
+        Utils.showText(playerView, getString(R.string.stall_watchdog_restart), 2500);
+        // seekTo from STATE_BUFFERING does not always report a new state, so re-arm explicitly
+        startStallWatchdog(STALL_TIMEOUT_MS);
     }
 
     private class PlayerListener implements Player.Listener {
@@ -1577,6 +1642,12 @@ public class PlayerActivity extends Activity {
                 }
             }
             setEndControlsVisible(haveMedia && (state == Player.STATE_ENDED || isNearEnd));
+
+            if (state == Player.STATE_BUFFERING) {
+                startStallWatchdog(STALL_TIMEOUT_MS);
+            } else {
+                stopStallWatchdog(state != Player.STATE_READY);
+            }
 
             if (state == Player.STATE_READY) {
                 frameRendered = true;
